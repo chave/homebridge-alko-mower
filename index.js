@@ -32,7 +32,12 @@ class AlkoMowerPlatform {
         accessory
       );
 
-      accessory.context.isAlkoMower = true;
+      // Avoid circular structure by storing only essential data
+      accessory.context.deviceInfo = {
+        name: mower.name,
+        thingName: mower.thingName
+      };
+
       this.api.registerPlatformAccessories("homebridge-alko-mower", "AlkoMower", [accessory]);
     });
   }
@@ -128,7 +133,7 @@ class AlkoMowerAccessory {
       this.refreshAuthToken().catch(err => {
         this.log.error(`[${this.name}] Token refresh error: ${err.message || err}`);
       });
-    }, 6 * 60 * 60 * 1000);
+    }, 45 * 60 * 1000); // Refresh every 45 minutes
   }
 
   async authenticate() {
@@ -164,6 +169,7 @@ class AlkoMowerAccessory {
       if (data.refresh_token) this.refreshToken = data.refresh_token;
       this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
     } catch (error) {
+      this.log.error(`[${this.name}] Token refresh failed: ${error.message}`);
       await this.authenticate();
     }
   }
@@ -179,34 +185,43 @@ class AlkoMowerAccessory {
     this.thingName = mower.thingName;
   }
 
-  async updateMowerState() {
+  async updateMowerState(retries = 1) {
     const url = `${this.apiBaseUrl}/things/${this.thingName}/state/reported`;
-    const response = await axios.get(url, {
-      headers: { Authorization: `Bearer ${this.token}` },
-    });
-    const reported = response.data;
-    this.currentBatteryLevel = reported.batteryLevel || 0;
-    this.lowBattery = this.currentBatteryLevel <= 20;
-    const opState = reported.operationState || "";
-    const subState = reported.operationSubState || "";
-    const opError = reported.operationError || {};
-    const errorCode = opError.code;
-    const errorDesc = opError.description;
+    try {
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${this.token}` },
+      });
+      const reported = response.data;
+      this.currentBatteryLevel = reported.batteryLevel || 0;
+      this.lowBattery = this.currentBatteryLevel <= 20;
+      const opState = reported.operationState || "";
+      const subState = reported.operationSubState || "";
+      const opError = reported.operationError || {};
+      const errorCode = opError.code;
+      const errorDesc = opError.description;
 
-    this.mowerState = opState;
-    this.mowerSubState = subState;
-    this.errorState = (errorCode && errorCode !== 999 && errorDesc !== "UNKNOWN") ? `${errorCode} (${errorDesc})` : "";
+      this.mowerState = opState;
+      this.mowerSubState = subState;
+      this.errorState = (errorCode && errorCode !== 999 && errorDesc !== "UNKNOWN") ? `${errorCode} (${errorDesc})` : "";
 
-    this.isCharging = /charging/i.test(opState) || /charging/i.test(subState);
-    this.isMowerOn = /working|start/i.test(opState);
+      this.isCharging = /charging/i.test(opState) || /charging/i.test(subState);
+      this.isMowerOn = /working|start/i.test(opState);
 
-    const subStateStr = subState ? ` (${subState})` : "";
-    const status = this.errorState ? `ERROR${subStateStr}` : `${opState}${subStateStr}`;
+      const subStateStr = subState ? ` (${subState})` : "";
+      const status = this.errorState ? `ERROR${subStateStr}` : `${opState}${subStateStr}`;
 
-    this.errorService.updateCharacteristic(this.Characteristic.ContactSensorState,
-      this.errorState ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+      this.errorService.updateCharacteristic(this.Characteristic.ContactSensorState,
+        this.errorState ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
 
-    this.log(`[${this.name}] Battery=${this.currentBatteryLevel}% | Charging=${this.isCharging} | Mowing=${this.isMowerOn} | State: ${status}${this.errorState ? ` | Error: ${this.errorState}` : ""}`);
+      this.log(`[${this.name}] Battery=${this.currentBatteryLevel}% | Charging=${this.isCharging} | Mowing=${this.isMowerOn} | State=${status}${this.errorState ? ` | Error: ${this.errorState}` : ""}`);
+    } catch (error) {
+      if (error.response && error.response.status === 401 && retries > 0) {
+        this.log.warn(`[${this.name}] Got 401 Unauthorized. Refreshing token and retrying state update...`);
+        await this.refreshAuthToken();
+        return this.updateMowerState(retries - 1);
+      }
+      throw new Error(error.message || 'Failed to fetch mower state');
+    }
   }
 
   async handleSwitchSet(value) {
@@ -228,6 +243,11 @@ class AlkoMowerAccessory {
         this.log.error(`[${this.name}] Failed to update state after command: ${err.message}`);
       }), 5000);
     } catch (err) {
+      if (err.response && err.response.status === 401) {
+        this.log.warn(`[${this.name}] Unauthorized command. Refreshing token and retrying...`);
+        await this.refreshAuthToken();
+        return this.handleSwitchSet(value);
+      }
       this.log.error(`[${this.name}] Failed to send command: ${err.message}`);
     }
   }

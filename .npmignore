@@ -1,0 +1,19 @@
+# Don't publish dev/test/config stuff
+.gitignore
+.git/
+.vscode/
+.idea/
+release.sh
+npm-debug.log
+test/
+tests/
+example/
+examples/
+.DS_Store
+*.local
+
+# Node modules (shouldn't be published)
+node_modules/
+
+# Homebridge dev configs (if any)
+homebridge/

@@ -1,0 +1,24 @@
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime
+node_modules/
+dist/
+.cache/
+.DS_Store
+
+# OS junk
+Thumbs.db
+
+# Env and credentials
+.env
+*.local
+
+# Editor settings
+.idea/
+.vscode/
+
+# Temporary release tools
+release.sh
