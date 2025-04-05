@@ -1,5 +1,7 @@
 # homebridge-alko-mower
-
+[![npm version](https://img.shields.io/npm/v/homebridge-alko-mower.svg)](https://www.npmjs.com/package/homebridge-alko-mower)
+[![npm downloads](https://img.shields.io/npm/dm/homebridge-alko-mower.svg)](https://www.npmjs.com/package/homebridge-alko-mower)
+[![license](https://img.shields.io/npm/l/homebridge-alko-mower.svg)](LICENSE)
 Control AL-KO Robolinho mowers via Homebridge.
 
 This Homebridge plugin allows you to control and monitor AL-KO Robolinho robotic mowers using the official AL-KO cloud APIs. Easily start, stop, and check battery levels directly from your Home app or Siri voice commands.
