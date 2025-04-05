@@ -32,7 +32,7 @@ class AlkoMowerPlatform {
         accessory
       );
 
-      accessory.context.device = mower;
+      accessory.context.isAlkoMower = true;
       this.api.registerPlatformAccessories("homebridge-alko-mower", "AlkoMower", [accessory]);
     });
   }
@@ -65,6 +65,9 @@ class AlkoMowerAccessory {
     this.currentBatteryLevel = 0;
     this.isCharging = false;
     this.lowBattery = false;
+    this.mowerState = "UNKNOWN";
+    this.mowerSubState = "";
+    this.errorState = "";
 
     this.informationService = accessory.getService(Service.AccessoryInformation)
       || accessory.addService(Service.AccessoryInformation);
@@ -87,6 +90,11 @@ class AlkoMowerAccessory {
       .onGet(() => this.isCharging ? Characteristic.ChargingState.CHARGING : Characteristic.ChargingState.NOT_CHARGING);
     this.batteryService.getCharacteristic(Characteristic.StatusLowBattery)
       .onGet(() => this.lowBattery ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL);
+
+    this.errorService = accessory.getService("Mower Error")
+      || accessory.addService(Service.ContactSensor, "Mower Error", "mowerError");
+    this.errorService.getCharacteristic(Characteristic.ContactSensorState)
+      .onGet(() => this.errorState ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED : Characteristic.ContactSensorState.CONTACT_DETECTED);
 
     if (api) {
       api.on('shutdown', () => {
@@ -181,9 +189,24 @@ class AlkoMowerAccessory {
     this.lowBattery = this.currentBatteryLevel <= 20;
     const opState = reported.operationState || "";
     const subState = reported.operationSubState || "";
+    const opError = reported.operationError || {};
+    const errorCode = opError.code;
+    const errorDesc = opError.description;
+
+    this.mowerState = opState;
+    this.mowerSubState = subState;
+    this.errorState = (errorCode && errorCode !== 999 && errorDesc !== "UNKNOWN") ? `${errorCode} (${errorDesc})` : "";
+
     this.isCharging = /charging/i.test(opState) || /charging/i.test(subState);
     this.isMowerOn = /working|start/i.test(opState);
-    this.log(`[${this.name}] Battery=${this.currentBatteryLevel}% | Charging=${this.isCharging} | Mowing=${this.isMowerOn}`);
+
+    const subStateStr = subState ? ` (${subState})` : "";
+    const status = this.errorState ? `ERROR${subStateStr}` : `${opState}${subStateStr}`;
+
+    this.errorService.updateCharacteristic(this.Characteristic.ContactSensorState,
+      this.errorState ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+
+    this.log(`[${this.name}] Battery=${this.currentBatteryLevel}% | Charging=${this.isCharging} | Mowing=${this.isMowerOn} | State: ${status}${this.errorState ? ` | Error: ${this.errorState}` : ""}`);
   }
 
   async handleSwitchSet(value) {
