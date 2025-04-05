@@ -1,6 +1,6 @@
 {
   "name": "homebridge-alko-mower",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Control AL-KO Robolinho mowers via Homebridge",
   "license": "MIT",
   "keywords": ["homebridge-plugin", "alko", "mower", "smart-garden", "robomower"],
