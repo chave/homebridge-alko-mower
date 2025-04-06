@@ -32,7 +32,6 @@ class AlkoMowerPlatform {
         accessory
       );
 
-      // Avoid circular structure by storing only essential data
       accessory.context.deviceInfo = {
         name: mower.name,
         thingName: mower.thingName
@@ -73,6 +72,7 @@ class AlkoMowerAccessory {
     this.mowerState = "UNKNOWN";
     this.mowerSubState = "";
     this.errorState = "";
+    this.refreshInProgress = false;
 
     this.informationService = accessory.getService(Service.AccessoryInformation)
       || accessory.addService(Service.AccessoryInformation);
@@ -133,7 +133,7 @@ class AlkoMowerAccessory {
       this.refreshAuthToken().catch(err => {
         this.log.error(`[${this.name}] Token refresh error: ${err.message || err}`);
       });
-    }, 45 * 60 * 1000); // Refresh every 45 minutes
+    }, 45 * 60 * 1000);
   }
 
   async authenticate() {
@@ -145,32 +145,41 @@ class AlkoMowerAccessory {
     params.append("password", this.password);
 
     try {
+      this.log(`[${this.name}] Requesting new access token...`);
       const response = await axios.post(this.tokenUrl, params);
       const data = response.data;
       this.token = data.access_token;
       this.refreshToken = data.refresh_token;
       this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+      this.log(`[${this.name}] Successfully authenticated. Token expires in ${(data.expires_in || 3600) / 60} minutes.`);
     } catch (error) {
+      this.log.error(`[${this.name}] Authentication failed: ${error.message}`);
       throw new Error("Authentication failed");
     }
   }
 
   async refreshAuthToken() {
-    if (!this.refreshToken) throw new Error("Missing refresh token");
-    const params = new URLSearchParams();
-    params.append("client_id", this.clientId);
-    params.append("client_secret", this.clientSecret);
-    params.append("grant_type", "refresh_token");
-    params.append("refresh_token", this.refreshToken);
+    if (this.refreshInProgress) return;
+    this.refreshInProgress = true;
     try {
+      if (!this.refreshToken) throw new Error("Missing refresh token");
+      this.log(`[${this.name}] Refreshing access token...`);
+      const params = new URLSearchParams();
+      params.append("client_id", this.clientId);
+      params.append("client_secret", this.clientSecret);
+      params.append("grant_type", "refresh_token");
+      params.append("refresh_token", this.refreshToken);
       const response = await axios.post(this.tokenUrl, params);
       const data = response.data;
       this.token = data.access_token;
       if (data.refresh_token) this.refreshToken = data.refresh_token;
       this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+      this.log(`[${this.name}] Access token successfully refreshed. Next refresh in ${(data.expires_in || 3600) / 60} minutes.`);
     } catch (error) {
       this.log.error(`[${this.name}] Token refresh failed: ${error.message}`);
       await this.authenticate();
+    } finally {
+      this.refreshInProgress = false;
     }
   }
 
@@ -186,6 +195,10 @@ class AlkoMowerAccessory {
   }
 
   async updateMowerState(retries = 1) {
+    if (Date.now() >= this.tokenExpiresAt) {
+      await this.refreshAuthToken();
+    }
+
     const url = `${this.apiBaseUrl}/things/${this.thingName}/state/reported`;
     try {
       const response = await axios.get(url, {
