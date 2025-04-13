@@ -1,0 +1,79 @@
+{
+  "pluginAlias": "AlkoMower",
+  "pluginType": "platform",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "required": [
+      "platform",
+      "name",
+      "clientId",
+      "clientSecret",
+      "username",
+      "password"
+    ],
+    "properties": {
+      "platform": {
+        "type": "string",
+        "const": "AlkoMower",
+        "title": "Platform Identifier (AlkoMower)",
+        "default": "AlkoMower"
+      },
+      "name": {
+        "type": "string",
+        "title": "Name",
+        "default": "AL-KO Mower"
+      },
+      "clientId": {
+        "type": "string",
+        "title": "Client ID"
+      },
+      "clientSecret": {
+        "type": "string",
+        "title": "Client Secret"
+      },
+      "username": {
+        "type": "string",
+        "title": "AL-KO Account Email"
+      },
+      "password": {
+        "type": "string",
+        "title": "AL-KO Account Password",
+        "format": "password"
+      },
+      "thingName": {
+        "type": "string",
+        "title": "Thing Name (optional)",
+        "description": "AL-KO device ID. Leave empty to auto-discover the first mower."
+      }
+    }
+  },
+  "layout": [
+    {
+      "type": "fieldset",
+      "title": "AL-KO OAuth Credentials",
+      "expandable": true,
+      "items": [
+        "clientId",
+        "clientSecret"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "AL-KO Account Login",
+      "expandable": true,
+      "items": [
+        "username",
+        "password"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Optional Device Info",
+      "expandable": true,
+      "items": [
+        "thingName"
+      ]
+    }
+  ]
+}
