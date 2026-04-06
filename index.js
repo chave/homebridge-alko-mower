@@ -19,25 +19,26 @@ class AlkoMowerPlatform {
 
     if (!api) return;
 
-    api.on("didFinishLaunching", async () => {
+    api.on("didFinishLaunching", () => {
       const uuid = UUIDGen.generate(this.config.username);
-      const accessory = new this.api.platformAccessory(this.config.name || "AL-KO Mower", uuid);
 
-      const mower = new AlkoMowerAccessory(
-        this.log,
-        this.config,
-        this.api,
-        Service,
-        Characteristic,
-        accessory
-      );
+      // Check if accessory is already cached from a previous session
+      const cached = this.accessories.find(a => a.UUID === uuid);
 
-      accessory.context.deviceInfo = {
-        name: mower.name,
-        thingName: mower.thingName
-      };
+      // Remove any stale duplicates
+      const stale = this.accessories.filter(a => a.UUID !== uuid);
+      if (stale.length > 0) {
+        this.api.unregisterPlatformAccessories("homebridge-alko-mower", "AlkoMower", stale);
+      }
 
-      this.api.registerPlatformAccessories("homebridge-alko-mower", "AlkoMower", [accessory]);
+      if (cached) {
+        this.log("Restoring AL-KO Mower from cache.");
+        new AlkoMowerAccessory(this.log, this.config, this.api, Service, Characteristic, cached);
+      } else {
+        const accessory = new this.api.platformAccessory(this.config.name || "AL-KO Mower", uuid);
+        new AlkoMowerAccessory(this.log, this.config, this.api, Service, Characteristic, accessory);
+        this.api.registerPlatformAccessories("homebridge-alko-mower", "AlkoMower", [accessory]);
+      }
     });
   }
 
@@ -58,7 +59,8 @@ class AlkoMowerAccessory {
     this.password = config.password;
     this.clientId = config.clientId;
     this.clientSecret = config.clientSecret;
-    this.thingName = config.thingName || null;
+    // Restore thingName from config, then cached context, then null (triggers discovery)
+    this.thingName = config.thingName || accessory.context.thingName || null;
 
     this.token = null;
     this.refreshToken = null;
@@ -92,17 +94,23 @@ class AlkoMowerAccessory {
     this.batteryService.getCharacteristic(Characteristic.BatteryLevel)
       .onGet(() => this.currentBatteryLevel);
     this.batteryService.getCharacteristic(Characteristic.ChargingState)
-      .onGet(() => this.isCharging ? Characteristic.ChargingState.CHARGING : Characteristic.ChargingState.NOT_CHARGING);
+      .onGet(() => this.isCharging
+        ? Characteristic.ChargingState.CHARGING
+        : Characteristic.ChargingState.NOT_CHARGING);
     this.batteryService.getCharacteristic(Characteristic.StatusLowBattery)
-      .onGet(() => this.lowBattery ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL);
+      .onGet(() => this.lowBattery
+        ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+        : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL);
 
     this.errorService = accessory.getService("Mower Error")
       || accessory.addService(Service.ContactSensor, "Mower Error", "mowerError");
     this.errorService.getCharacteristic(Characteristic.ContactSensorState)
-      .onGet(() => this.errorState ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED : Characteristic.ContactSensorState.CONTACT_DETECTED);
+      .onGet(() => this.errorState
+        ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+        : Characteristic.ContactSensorState.CONTACT_DETECTED);
 
     if (api) {
-      api.on('shutdown', () => {
+      api.on("shutdown", () => {
         if (this.pollInterval) clearInterval(this.pollInterval);
         if (this.refreshInterval) clearInterval(this.refreshInterval);
       });
@@ -111,23 +119,38 @@ class AlkoMowerAccessory {
     this.init();
   }
 
+  // Returns the Basic Auth header value for token endpoint requests
+  basicAuthHeader() {
+    const credentials = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString("base64");
+    return `Basic ${credentials}`;
+  }
+
   async init() {
+    let initialized = false;
     try {
       await this.authenticate();
-      if (!this.thingName) await this.discoverMower();
+      if (!this.thingName) {
+        await this.discoverMower();
+        // Persist discovered thingName so restarts don't require re-discovery
+        this.accessory.context.thingName = this.thingName;
+      }
+      initialized = true;
     } catch (err) {
       this.log.error(`[${this.name}] Initialization failed: ${err.message || err}`);
+      return;
     }
+
+    if (!initialized) return;
+
+    await this.updateMowerState().catch(err => {
+      this.log.error(`[${this.name}] Initial state update failed: ${err.message || err}`);
+    });
 
     this.pollInterval = setInterval(() => {
       this.updateMowerState().catch(err => {
         this.log.error(`[${this.name}] Error updating mower state: ${err.message || err}`);
       });
     }, 60 * 1000);
-
-    this.updateMowerState().catch(err => {
-      this.log.error(`[${this.name}] Initial state update failed: ${err.message || err}`);
-    });
 
     this.refreshInterval = setInterval(() => {
       this.refreshAuthToken().catch(err => {
@@ -138,22 +161,27 @@ class AlkoMowerAccessory {
 
   async authenticate() {
     const params = new URLSearchParams();
-    params.append("client_id", this.clientId);
-    params.append("client_secret", this.clientSecret);
     params.append("grant_type", "password");
     params.append("username", this.username);
     params.append("password", this.password);
+    params.append("scope", "alkoCustomerId alkoCulture offline_access introspection");
 
     try {
       this.log(`[${this.name}] Requesting new access token...`);
-      const response = await axios.post(this.tokenUrl, params);
+      const response = await axios.post(this.tokenUrl, params, {
+        headers: { Authorization: this.basicAuthHeader() },
+        timeout: 15000,
+      });
       const data = response.data;
       this.token = data.access_token;
       this.refreshToken = data.refresh_token;
       this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
-      this.log(`[${this.name}] Successfully authenticated. Token expires in ${(data.expires_in || 3600) / 60} minutes.`);
+      this.log(`[${this.name}] Authenticated. Token expires in ${Math.round((data.expires_in || 3600) / 60)} minutes.`);
     } catch (error) {
-      this.log.error(`[${this.name}] Authentication failed: ${error.message}`);
+      const detail = error.response
+        ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`
+        : error.message;
+      this.log.error(`[${this.name}] Authentication failed: ${detail}`);
       throw new Error("Authentication failed");
     }
   }
@@ -165,16 +193,18 @@ class AlkoMowerAccessory {
       if (!this.refreshToken) throw new Error("Missing refresh token");
       this.log(`[${this.name}] Refreshing access token...`);
       const params = new URLSearchParams();
-      params.append("client_id", this.clientId);
-      params.append("client_secret", this.clientSecret);
       params.append("grant_type", "refresh_token");
       params.append("refresh_token", this.refreshToken);
-      const response = await axios.post(this.tokenUrl, params);
+
+      const response = await axios.post(this.tokenUrl, params, {
+        headers: { Authorization: this.basicAuthHeader() },
+        timeout: 15000,
+      });
       const data = response.data;
       this.token = data.access_token;
       if (data.refresh_token) this.refreshToken = data.refresh_token;
       this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
-      this.log(`[${this.name}] Access token successfully refreshed. Next refresh in ${(data.expires_in || 3600) / 60} minutes.`);
+      this.log(`[${this.name}] Access token refreshed.`);
     } catch (error) {
       this.log.error(`[${this.name}] Token refresh failed: ${error.message}`);
       await this.authenticate();
@@ -185,16 +215,29 @@ class AlkoMowerAccessory {
 
   async discoverMower() {
     const url = `${this.apiBaseUrl}/things`;
-    const response = await axios.get(url, {
-      headers: { Authorization: `Bearer ${this.token}` },
-    });
-    const devices = response.data;
-    if (!devices.length) throw new Error("No AL-KO devices found");
-    const mower = devices.find(d => d.thingType && d.thingType.includes("ROBOLINHO")) || devices[0];
-    this.thingName = mower.thingName;
+    try {
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${this.token}` },
+        timeout: 15000,
+      });
+      const devices = response.data;
+      if (!devices || !devices.length) throw new Error("No AL-KO devices found");
+      const mower = devices.find(d => d.thingType && d.thingType.toUpperCase().includes("ROBOLINHO")) || devices[0];
+      this.thingName = mower.thingName;
+      this.log(`[${this.name}] Discovered mower: ${this.thingName}`);
+    } catch (error) {
+      const detail = error.response
+        ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`
+        : error.message;
+      throw new Error(`Device discovery failed: ${detail}`);
+    }
   }
 
   async updateMowerState(retries = 1) {
+    if (!this.thingName) {
+      this.log.warn(`[${this.name}] Cannot update state: thingName not set.`);
+      return;
+    }
     if (Date.now() >= this.tokenExpiresAt) {
       await this.refreshAuthToken();
     }
@@ -203,10 +246,12 @@ class AlkoMowerAccessory {
     try {
       const response = await axios.get(url, {
         headers: { Authorization: `Bearer ${this.token}` },
+        timeout: 15000,
       });
       const reported = response.data;
       this.currentBatteryLevel = reported.batteryLevel || 0;
       this.lowBattery = this.currentBatteryLevel <= 20;
+
       const opState = reported.operationState || "";
       const subState = reported.operationSubState || "";
       const opError = reported.operationError || {};
@@ -215,29 +260,48 @@ class AlkoMowerAccessory {
 
       this.mowerState = opState;
       this.mowerSubState = subState;
-      this.errorState = (errorCode && errorCode !== 999 && errorDesc !== "UNKNOWN") ? `${errorCode} (${errorDesc})` : "";
+      this.errorState = (errorCode && errorCode !== 999 && errorDesc !== "UNKNOWN")
+        ? `${errorCode} (${errorDesc})`
+        : "";
 
       this.isCharging = /charging/i.test(opState) || /charging/i.test(subState);
       this.isMowerOn = /working|start/i.test(opState);
 
+      this.errorService.updateCharacteristic(
+        this.Characteristic.ContactSensorState,
+        this.errorState
+          ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+          : this.Characteristic.ContactSensorState.CONTACT_DETECTED
+      );
+      this.batteryService.updateCharacteristic(this.Characteristic.BatteryLevel, this.currentBatteryLevel);
+      this.batteryService.updateCharacteristic(
+        this.Characteristic.ChargingState,
+        this.isCharging
+          ? this.Characteristic.ChargingState.CHARGING
+          : this.Characteristic.ChargingState.NOT_CHARGING
+      );
+
       const subStateStr = subState ? ` (${subState})` : "";
       const status = this.errorState ? `ERROR${subStateStr}` : `${opState}${subStateStr}`;
-
-      this.errorService.updateCharacteristic(this.Characteristic.ContactSensorState,
-        this.errorState ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
-
       this.log(`[${this.name}] Battery=${this.currentBatteryLevel}% | Charging=${this.isCharging} | Mowing=${this.isMowerOn} | State=${status}${this.errorState ? ` | Error: ${this.errorState}` : ""}`);
     } catch (error) {
       if (error.response && error.response.status === 401 && retries > 0) {
-        this.log.warn(`[${this.name}] Got 401 Unauthorized. Refreshing token and retrying state update...`);
+        this.log.warn(`[${this.name}] Got 401. Refreshing token and retrying...`);
         await this.refreshAuthToken();
         return this.updateMowerState(retries - 1);
       }
-      throw new Error(error.message || 'Failed to fetch mower state');
+      const detail = error.response
+        ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`
+        : error.message;
+      throw new Error(`Failed to fetch mower state: ${detail}`);
     }
   }
 
   async handleSwitchSet(value) {
+    if (!this.thingName) {
+      this.log.error(`[${this.name}] Cannot send command: thingName not set.`);
+      return;
+    }
     const desiredState = value ? "WORKING" : "HOMING";
     const url = `${this.apiBaseUrl}/things/${this.thingName}/state/desired`;
     try {
@@ -249,19 +313,25 @@ class AlkoMowerAccessory {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/json",
           },
+          timeout: 15000,
         }
       );
       this.log(`[${this.name}] Sent command: ${desiredState}`);
-      setTimeout(() => this.updateMowerState().catch(err => {
-        this.log.error(`[${this.name}] Failed to update state after command: ${err.message}`);
-      }), 5000);
+      setTimeout(() => {
+        this.updateMowerState().catch(err => {
+          this.log.error(`[${this.name}] Failed to update state after command: ${err.message}`);
+        });
+      }, 5000);
     } catch (err) {
       if (err.response && err.response.status === 401) {
-        this.log.warn(`[${this.name}] Unauthorized command. Refreshing token and retrying...`);
+        this.log.warn(`[${this.name}] Unauthorized. Refreshing token and retrying...`);
         await this.refreshAuthToken();
         return this.handleSwitchSet(value);
       }
-      this.log.error(`[${this.name}] Failed to send command: ${err.message}`);
+      const detail = err.response
+        ? `HTTP ${err.response.status}: ${JSON.stringify(err.response.data)}`
+        : err.message;
+      this.log.error(`[${this.name}] Failed to send command: ${detail}`);
     }
   }
 
