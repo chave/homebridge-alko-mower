@@ -89,8 +89,9 @@ class AlkoMowerAccessory {
       .onSet(this.handleSwitchSet.bind(this))
       .onGet(this.handleSwitchGet.bind(this));
 
-    this.batteryService = accessory.getService(Service.BatteryService)
-      || accessory.addService(Service.BatteryService, this.name + " Battery");
+    const BatteryService = Service.Battery || Service.BatteryService;
+    this.batteryService = accessory.getService(BatteryService)
+      || accessory.addService(BatteryService, this.name + " Battery");
     this.batteryService.getCharacteristic(Characteristic.BatteryLevel)
       .onGet(() => this.currentBatteryLevel);
     this.batteryService.getCharacteristic(Characteristic.ChargingState)
@@ -117,12 +118,6 @@ class AlkoMowerAccessory {
     }
 
     this.init();
-  }
-
-  // Returns the Basic Auth header value for token endpoint requests
-  basicAuthHeader() {
-    const credentials = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString("base64");
-    return `Basic ${credentials}`;
   }
 
   async init() {
@@ -161,6 +156,8 @@ class AlkoMowerAccessory {
 
   async authenticate() {
     const params = new URLSearchParams();
+    params.append("client_id", this.clientId);
+    params.append("client_secret", this.clientSecret);
     params.append("grant_type", "password");
     params.append("username", this.username);
     params.append("password", this.password);
@@ -169,7 +166,6 @@ class AlkoMowerAccessory {
     try {
       this.log(`[${this.name}] Requesting new access token...`);
       const response = await axios.post(this.tokenUrl, params, {
-        headers: { Authorization: this.basicAuthHeader() },
         timeout: 15000,
       });
       const data = response.data;
@@ -193,11 +189,12 @@ class AlkoMowerAccessory {
       if (!this.refreshToken) throw new Error("Missing refresh token");
       this.log(`[${this.name}] Refreshing access token...`);
       const params = new URLSearchParams();
+      params.append("client_id", this.clientId);
+      params.append("client_secret", this.clientSecret);
       params.append("grant_type", "refresh_token");
       params.append("refresh_token", this.refreshToken);
 
       const response = await axios.post(this.tokenUrl, params, {
-        headers: { Authorization: this.basicAuthHeader() },
         timeout: 15000,
       });
       const data = response.data;
@@ -264,8 +261,11 @@ class AlkoMowerAccessory {
         ? `${errorCode} (${errorDesc})`
         : "";
 
+      const prevStatus = `${this.mowerState}|${this.mowerSubState}|${this.currentBatteryLevel}|${this.errorState}`;
       this.isCharging = /charging/i.test(opState) || /charging/i.test(subState);
       this.isMowerOn = /working|start/i.test(opState);
+      const newStatus = `${opState}|${subState}|${reported.batteryLevel || 0}|${this.errorState}`;
+      const changed = prevStatus !== newStatus;
 
       this.errorService.updateCharacteristic(
         this.Characteristic.ContactSensorState,
@@ -281,9 +281,11 @@ class AlkoMowerAccessory {
           : this.Characteristic.ChargingState.NOT_CHARGING
       );
 
-      const subStateStr = subState ? ` (${subState})` : "";
-      const status = this.errorState ? `ERROR${subStateStr}` : `${opState}${subStateStr}`;
-      this.log(`[${this.name}] Battery=${this.currentBatteryLevel}% | Charging=${this.isCharging} | Mowing=${this.isMowerOn} | State=${status}${this.errorState ? ` | Error: ${this.errorState}` : ""}`);
+      if (changed) {
+        const subStateStr = subState ? ` (${subState})` : "";
+        const status = this.errorState ? `ERROR${subStateStr}` : `${opState}${subStateStr}`;
+        this.log(`[${this.name}] Battery=${this.currentBatteryLevel}% | Charging=${this.isCharging} | Mowing=${this.isMowerOn} | State=${status}${this.errorState ? ` | Error: ${this.errorState}` : ""}`);
+      }
     } catch (error) {
       if (error.response && error.response.status === 401 && retries > 0) {
         this.log.warn(`[${this.name}] Got 401. Refreshing token and retrying...`);
