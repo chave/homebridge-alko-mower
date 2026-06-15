@@ -61,6 +61,7 @@ class AlkoMowerAccessory {
     this.clientSecret = config.clientSecret;
     // Restore thingName from config, then cached context, then null (triggers discovery)
     this.thingName = config.thingName || accessory.context.thingName || null;
+    this.debug = config.debug || false;
 
     this.token = null;
     this.refreshToken = null;
@@ -74,6 +75,9 @@ class AlkoMowerAccessory {
     this.mowerState = "UNKNOWN";
     this.mowerSubState = "";
     this.errorState = "";
+    this.isConnected = true;
+    this.bladeChange = false;
+    this.bladeLifeLevel = 100;
     this.refreshInProgress = false;
 
     this.informationService = accessory.getService(Service.AccessoryInformation)
@@ -109,6 +113,20 @@ class AlkoMowerAccessory {
       .onGet(() => this.errorState
         ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
         : Characteristic.ContactSensorState.CONTACT_DETECTED);
+    // isConnected=false: reported state is stale. Flag a fault on the error sensor.
+    this.errorService.getCharacteristic(Characteristic.StatusFault)
+      .onGet(() => this.isConnected
+        ? Characteristic.StatusFault.NO_FAULT
+        : Characteristic.StatusFault.GENERAL_FAULT);
+
+    this.filterService = accessory.getService("Mower Blades")
+      || accessory.addService(Service.FilterMaintenance, "Mower Blades", "mowerBlades");
+    this.filterService.getCharacteristic(Characteristic.FilterChangeIndication)
+      .onGet(() => this.bladeChange
+        ? Characteristic.FilterChangeIndication.CHANGE_FILTER
+        : Characteristic.FilterChangeIndication.FILTER_OK);
+    this.filterService.getCharacteristic(Characteristic.FilterLifeLevel)
+      .onGet(() => this.bladeLifeLevel);
 
     if (api) {
       api.on("shutdown", () => {
@@ -246,8 +264,19 @@ class AlkoMowerAccessory {
         timeout: 15000,
       });
       const reported = response.data;
+      if (this.debug) this.log(`[${this.name}] Raw reported state: ${JSON.stringify(reported)}`);
+      this.isConnected = reported.isConnected !== false;
       this.currentBatteryLevel = reported.batteryLevel || 0;
       this.lowBattery = this.currentBatteryLevel <= 20;
+
+      // ponytail: bladesService assumed to be the service interval, remainingBladeLifetime the remainder.
+      // If the unit/scale turns out different, CHANGE_FILTER (remaining<=0) stays correct; only the % is a guess.
+      const bladeTotal = reported.bladesService || 0;
+      const bladeRemaining = reported.remainingBladeLifetime || 0;
+      this.bladeChange = bladeRemaining <= 0;
+      this.bladeLifeLevel = bladeTotal > 0
+        ? Math.max(0, Math.min(100, Math.round((bladeRemaining / bladeTotal) * 100)))
+        : (bladeRemaining > 0 ? 100 : 0);
 
       const opState = reported.operationState || "";
       const subState = reported.operationSubState || "";
@@ -257,9 +286,16 @@ class AlkoMowerAccessory {
 
       this.mowerState = opState;
       this.mowerSubState = subState;
+      // ponytail: pinlock/lockouts aren't in operationError (it reports 999/UNKNOWN).
+      // situationFlags.operationPermitted=false is the authoritative "blocked" signal.
+      const situation = reported.operationSituation || "";
+      const flags = reported.situationFlags || {};
+      const blocked = flags.operationPermitted === false;
       this.errorState = (errorCode && errorCode !== 999 && errorDesc !== "UNKNOWN")
         ? `${errorCode} (${errorDesc})`
-        : "";
+        : blocked
+          ? `LOCKED (${subState || situation || opState})`
+          : "";
 
       const prevStatus = `${this.mowerState}|${this.mowerSubState}|${this.currentBatteryLevel}|${this.errorState}`;
       this.isCharging = /charging/i.test(opState) || /charging/i.test(subState);
@@ -273,6 +309,19 @@ class AlkoMowerAccessory {
           ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
           : this.Characteristic.ContactSensorState.CONTACT_DETECTED
       );
+      this.errorService.updateCharacteristic(
+        this.Characteristic.StatusFault,
+        this.isConnected
+          ? this.Characteristic.StatusFault.NO_FAULT
+          : this.Characteristic.StatusFault.GENERAL_FAULT
+      );
+      this.filterService.updateCharacteristic(
+        this.Characteristic.FilterChangeIndication,
+        this.bladeChange
+          ? this.Characteristic.FilterChangeIndication.CHANGE_FILTER
+          : this.Characteristic.FilterChangeIndication.FILTER_OK
+      );
+      this.filterService.updateCharacteristic(this.Characteristic.FilterLifeLevel, this.bladeLifeLevel);
       this.batteryService.updateCharacteristic(this.Characteristic.BatteryLevel, this.currentBatteryLevel);
       this.batteryService.updateCharacteristic(
         this.Characteristic.ChargingState,

@@ -45,6 +45,12 @@
         "type": "string",
         "title": "Thing Name (optional)",
         "description": "AL-KO device ID. Leave empty to auto-discover the first mower."
+      },
+      "debug": {
+        "type": "boolean",
+        "title": "Debug Logging",
+        "description": "Log the raw reported state from AL-KO on every poll.",
+        "default": false
       }
     }
   },
@@ -72,7 +78,8 @@
       "title": "Optional Device Info",
       "expandable": true,
       "items": [
-        "thingName"
+        "thingName",
+        "debug"
       ]
     }
   ]
