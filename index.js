@@ -271,12 +271,11 @@ class AlkoMowerAccessory {
 
       // ponytail: bladesService assumed to be the service interval, remainingBladeLifetime the remainder.
       // If the unit/scale turns out different, CHANGE_FILTER (remaining<=0) stays correct; only the % is a guess.
+      // When offline the snapshot is stale — don't raise "replace" off week-old data; StatusFault carries it.
       const bladeTotal = reported.bladesService || 0;
       const bladeRemaining = reported.remainingBladeLifetime || 0;
-      this.bladeChange = bladeRemaining <= 0;
-      this.bladeLifeLevel = bladeTotal > 0
-        ? Math.max(0, Math.min(100, Math.round((bladeRemaining / bladeTotal) * 100)))
-        : (bladeRemaining > 0 ? 100 : 0);
+      this.bladeChange = this.isConnected && bladeRemaining <= 0;
+      this.bladeLifeLevel = bladeTotal ? Math.max(0, Math.min(100, Math.round((bladeRemaining / bladeTotal) * 100))) : 100;
 
       const opState = reported.operationState || "";
       const subState = reported.operationSubState || "";
@@ -289,8 +288,9 @@ class AlkoMowerAccessory {
       // ponytail: pinlock/lockouts aren't in operationError (it reports 999/UNKNOWN).
       // Key on operationSituation: "OPERATION_NOT_PERMITTED_LOCKED" / subState LOCKED_PIN.
       // NOT situationFlags.operationPermitted — that's false whenever idle/off-window, not a fault.
+      // Gated on isConnected: a stale offline snapshot shouldn't raise a lockout; StatusFault carries it.
       const situation = reported.operationSituation || "";
-      const blocked = /LOCK/i.test(situation) || /LOCK/i.test(subState);
+      const blocked = this.isConnected && /LOCK/i.test(situation + subState);
       this.errorState = (errorCode && errorCode !== 999 && errorDesc !== "UNKNOWN")
         ? `${errorCode} (${errorDesc})`
         : blocked
