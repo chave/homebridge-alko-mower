@@ -287,10 +287,10 @@ class AlkoMowerAccessory {
       this.mowerState = opState;
       this.mowerSubState = subState;
       // ponytail: pinlock/lockouts aren't in operationError (it reports 999/UNKNOWN).
-      // situationFlags.operationPermitted=false is the authoritative "blocked" signal.
+      // Key on operationSituation: "OPERATION_NOT_PERMITTED_LOCKED" / subState LOCKED_PIN.
+      // NOT situationFlags.operationPermitted — that's false whenever idle/off-window, not a fault.
       const situation = reported.operationSituation || "";
-      const flags = reported.situationFlags || {};
-      const blocked = flags.operationPermitted === false;
+      const blocked = /LOCK/i.test(situation) || /LOCK/i.test(subState);
       this.errorState = (errorCode && errorCode !== 999 && errorDesc !== "UNKNOWN")
         ? `${errorCode} (${errorDesc})`
         : blocked
