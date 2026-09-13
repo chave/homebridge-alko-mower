@@ -17,3 +17,6 @@ node_modules/
 
 # Homebridge dev configs (if any)
 homebridge/
+
+# Local tooling
+.claude/
