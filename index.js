@@ -269,7 +269,7 @@ class AlkoMowerAccessory {
       this.currentBatteryLevel = reported.batteryLevel || 0;
       this.lowBattery = this.currentBatteryLevel <= 20;
 
-      // ponytail: bladesService assumed to be the service interval, remainingBladeLifetime the remainder.
+      // bladesService assumed to be the service interval, remainingBladeLifetime the remainder.
       // If the unit/scale turns out different, CHANGE_FILTER (remaining<=0) stays correct; only the % is a guess.
       // When offline the snapshot is stale — don't raise "replace" off week-old data; StatusFault carries it.
       const bladeTotal = reported.bladesService || 0;
@@ -285,7 +285,7 @@ class AlkoMowerAccessory {
 
       this.mowerState = opState;
       this.mowerSubState = subState;
-      // ponytail: pinlock/lockouts aren't in operationError (it reports 999/UNKNOWN).
+      // pinlock/lockouts aren't in operationError (it reports 999/UNKNOWN).
       // Key on operationSituation: "OPERATION_NOT_PERMITTED_LOCKED" / subState LOCKED_PIN.
       // NOT situationFlags.operationPermitted — that's false whenever idle/off-window, not a fault.
       // Gated on isConnected: a stale offline snapshot shouldn't raise a lockout; StatusFault carries it.
